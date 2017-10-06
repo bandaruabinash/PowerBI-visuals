@@ -20,21 +20,22 @@ module powerbi.extensibility.visual {
     import DataViewObjectsParser = powerbi.extensibility.utils.dataview.DataViewObjectsParser;
     import TextProperties = powerbi.extensibility.utils.formatting.TextProperties;
     import textMeasurementService = powerbi.extensibility.utils.formatting.textMeasurementService;
+    import ValueFormatter = powerbi.extensibility.utils.formatting.valueFormatter;
 
     export class ThermometerSettings extends DataViewObjectsParser {
-        legend: LegendSettings = new LegendSettings();
+        public legend: LegendSettings = new LegendSettings();
     }
 
     export class LegendSettings {
-        show: boolean = true;
-        position: string = "Right";
-        showTitle: boolean = false;
-        titleText: string = "";
-        labelColor: string = "#000000";
-        fontSize: number = 8;
+        public show: boolean = true;
+        public position: string = 'Right';
+        public showTitle: boolean = false;
+        public titleText: string = '';
+        public labelColor: string = '#000000';
+        public fontSize: number = 8;
     }
 
-    export interface ViewModel {
+    export interface IViewModel {
         value: number;
         targetValue: number;
         color?: string;
@@ -42,33 +43,26 @@ module powerbi.extensibility.visual {
         max?: number;
         drawTickBar?: boolean;
     }
-    export interface Range {
+    export interface IRange {
         range1: number;
         range2: number;
         range3: number;
         range4: number;
     }
 
-    export interface ThermometerViewModel {
+    export interface IThermometerViewModel {
         dataView: DataView;
         settings: ThermometerSettings;
         legendData: LegendData;
     }
 
-    module Selectors {
-        export const ClassName: ClassAndSelector = createClassAndSelector("thermometer");
-        export const Chart: ClassAndSelector = createClassAndSelector("chart");
-        export const ChartLine: ClassAndSelector = createClassAndSelector("chart-line");
-        export const Body: ClassAndSelector = createClassAndSelector("thermometer-body");
-        export const Label: ClassAndSelector = createClassAndSelector("label");
-        export const LegendItems: ClassAndSelector = createClassAndSelector("legendItem");
-        export const LegendTitle: ClassAndSelector = createClassAndSelector("legendTitle");
-    }
-
     export class Thermometer implements IVisual {
-
+        private static legendPropertyIdentifier: DataViewObjectPropertyIdentifier = {
+            objectName: 'legend',
+            propertyName: 'fill'
+        };
         private viewport: IViewport;
-        private settings: any;
+        private settings;
         private svg: d3.Selection<SVGElement>;
         private mainGroup: d3.Selection<SVGElement>;
         private backCircle: d3.Selection<SVGElement>;
@@ -78,611 +72,90 @@ module powerbi.extensibility.visual {
         private tempMarkings: d3.Selection<SVGElement>;
         private target: d3.Selection<SVGElement>;
         private text: d3.Selection<SVGElement>;
-        public data: ViewModel;
-        public range: Range;
-        public dataView: DataView;
-        private viewModel: ThermometerViewModel;
-        public fill: string;
-        public border: string;
-        private ThermometerDiv: Selection<any>;
+        private data: IViewModel;
+        private range: IRange;
+        private dataView: DataView;
+        private viewModel: IThermometerViewModel;
+        private fill: string;
+        private border: string;
+        private thermometerDiv: Selection<{}>;
         private interactivityService: IInteractivityService;
         private host: IVisualHost;
-        private isInteractiveChart: boolean = false;
         private legend: ILegend;
-        private body: Selection<any>;
-        private element: HTMLElement;
-
-        private static LegendPropertyIdentifier: DataViewObjectPropertyIdentifier = {
-            objectName: "legend",
-            propertyName: "fill"
-        };
-
-        private prevDataViewObjects: any = {};
-
-        private createLegendData(dataView: DataView, host: IVisualHost, settings: ThermometerSettings): LegendData {
-
-            const legendData: LegendData = {
-                fontSize: this.viewport.height * 0.032,
-                dataPoints: [],
-                title: settings.legend.showTitle ? (settings.legend.titleText) : null,
-                labelColor: settings.legend.labelColor
-            };
-
-            var low = [this.data.min, this.range.range1, this.range.range2, this.range.range3];
-            var high = [this.range.range1, this.range.range2, this.range.range3, this.data.max];
-            var i = 0;
-            var label = [];
-            while (low[i] != this.data.max && i < 4) {
-                label.push((i + 1).toString());
-                i++;
-            }
-            var category = dataView.categorical.categories[0];
-
-            legendData.dataPoints = label.map(
-                (typeMeta: string, index: number): LegendDataPoint => {
-                    let lowValue = low[parseInt(typeMeta) - 1] < 0 ? '(' + low[parseInt(typeMeta) - 1] + ')' : low[parseInt(typeMeta) - 1];
-                    let highValue = high[parseInt(typeMeta) - 1] < 0 ? '(' + high[parseInt(typeMeta) - 1] + ')' : high[parseInt(typeMeta) - 1];
-                    let label = lowValue + '-' + highValue;
-                    return {
-                        label: label as string,
-                        color: Thermometer.getFill(dataView, 'fill' + typeMeta).solid.color,
-                        icon: LegendIcon.Circle,
-                        selected: false,
-                        identity: host.createSelectionIdBuilder()
-                            .withCategory(category, index)
-                            .withMeasure(typeMeta)
-                            .createSelectionId()
-                    };
-                });
-
-            return legendData;
-        }
+        private body: Selection<{}>;
+        private legendsTitleData = [];
+        private valFormatter;
+        private legendsFormatter;
+        private h1; private h2; private h3; private h4;
+        private prevDataViewObjects = {};
 
         /** This is called once when the visual is initialially created */
         constructor(options: VisualConstructorOptions) {
             this.host = options.host;
-            let svg = this.svg = d3.select(options.element).style('height', '100%').append('svg').classed('Thermometer', true);
-            options.element.setAttribute("id", "container");
+            const svg = this.svg = d3.select(options.element).style('height', '100%').append('svg').classed('Thermometer', true);
+            options.element.setAttribute('id', 'container');
             this.body = d3.select(options.element);
-            this.ThermometerDiv = this.body.append("div")
-                .classed(Selectors.Body.class, true);
             this.interactivityService = createInteractivityService(this.host);
-            this.element = options.element;
-            this.legend = createLegend($(this.element),
-                this.isInteractiveChart,
-                this.interactivityService,
-                true,
-                null);
+            this.body.style('cursor', 'default');
+            this.legend = createLegend(
+                $(options.element),
+                false,
+                null,
+                true);
         }
 
-        /** Update is called for data updates, resizes & formatting changes */
-        public update(options: VisualUpdateOptions) {
-            this.viewport = options.viewport;
-            if (!options.dataViews)
-                return;
-            if (0 === options.dataViews.length)
-                return;
-            var dataView = options.dataViews[0];
-            this.dataView = options.dataViews[0];
-
-            this.data = {
-                value: 0,
-                targetValue: null,
-                color: null,
-                min: null,
-                max: null,
-                drawTickBar: null
-            }
-            if (dataView && dataView.categorical) {
-                if (!dataView.categorical.categories || dataView.categorical.categories.length == 0)
-                    return;
-                if (typeof dataView.categorical.categories[0].values[0] !== 'number')
-                    return;
-                this.data.value = <number>dataView.categorical.categories[0].values[0];
-                var series = dataView.categorical.values;
-
-                if (series && 0 !== series.length) {
-                    var length = series.length;
-                    var iCount = 0;
-                    while (iCount < length) {
-                        if (series[iCount].source.roles["TargetValue"]) {
-                            if (typeof series[iCount].values[0] === 'number')
-                                this.data.targetValue = <number>series[iCount].values[0];
+        private static getValue<T>(dataView: DataView, objectName: string, key: string, defaultValue: T): T {
+            if (dataView) {
+                const objects = dataView.metadata.objects;
+                if (objects) {
+                    const config = objects[objectName];
+                    if (config) {
+                        if (config['valDecimalValue'] > 4) {
+                            config['valDecimalValue'] = 4;
+                        } else if (config['valDecimalValue'] < 0) {
+                            config['valDecimalValue'] = 0;
                         }
-                        if (series[iCount].source.roles["Min"]) {
-                            if (typeof series[iCount].values[0] === 'number')
-                                this.data.min = <number>series[iCount].values[0];
+                        if (config['decimalValue'] > 4) {
+                            config['decimalValue'] = 4;
+                        } else if (config['decimalValue'] < 0) {
+                            config['decimalValue'] = 0;
                         }
-                        if (series[iCount].source.roles["Max"]) {
-                            if (typeof series[iCount].values[0] === 'number')
-                                this.data.max = <number>series[iCount].values[0];
+                        const val = <T>config[key];
+                        if (val != null) {
+                            return val;
                         }
-                        iCount++;
                     }
                 }
             }
-            if (!this.data.max)
-                this.data.max = Thermometer.getValue(this.dataView, 'max', 100);
-            if (!this.data.min)
-                this.data.min = Thermometer.getValue(this.dataView, 'min', 0);
 
-            this.data.drawTickBar = Thermometer.getValue(this.dataView, 'tickBar', true);
-            let maximum = this.data.max;
-            let minimum = this.data.min;
-            if (this.data.targetValue) {
-                maximum = Math.max(this.data.value, this.data.targetValue);
-                minimum = Math.min(this.data.value, this.data.targetValue);
-            }
-            else {
-                maximum = Math.max(this.data.value, maximum);
-                minimum = Math.min(this.data.value, minimum);
-            }
-            // To handle values greater than max value
-            if (maximum > this.data.max) {
-                this.data.max = Math.ceil(maximum);
-            }
-            if (minimum < this.data.min) {
-                this.data.min = Math.floor(minimum);
-            }
-            if (this.data.min >= this.data.max) {
-                this.data.min = this.data.max - 1;
-            }
-            var viewport = options.viewport;
-            var duration = 1000;
-
-            // By default, only category-1
-            this.range = {
-                range1: this.data.max,
-                range2: this.data.max,
-                range3: this.data.max,
-                range4: this.data.max
-            };
-
-            this.range.range1 = Thermometer.getValue(this.dataView, 'range1', undefined);
-            this.range.range2 = Thermometer.getValue(this.dataView, 'range2', undefined);
-            this.range.range3 = Thermometer.getValue(this.dataView, 'range3', undefined);
-            this.range.range4 = Thermometer.getValue(this.dataView, 'range4', undefined);
-
-            if (this.range.range1 <= this.data.min || this.range.range1 > this.data.max || this.range.range2 <= this.range.range1 || this.range.range2 > this.data.max || this.range.range3 <= this.range.range2 || this.range.range3 > this.data.max || this.range.range4 <= this.range.range3) {
-                this.svg.selectAll("*").remove();
-                this.body.select('.legend').style({ 'display': 'none' });
-                this.body.select('.errorMessage').remove();
-                this.body
-                    .append('div')
-                    .classed('errorMessage', true)
-                    .text("Please enter appropriate range values")
-                    .style({
-                        'display': 'block'
-                        , 'top': this.viewport.height / 2 + 'px', 'position': 'absolute'
-                        , 'width': '100%'
-                    });
-                return
-            }
-            else {
-                this.body.select('.errorMessage').remove();
-                this.body.select('.legend').style({ 'display': 'block' });
-                this.range.range1 = Thermometer.getValue(this.dataView, 'range1', this.data.max);
-                this.range.range2 = Thermometer.getValue(this.dataView, 'range2', this.data.max);
-                this.range.range3 = Thermometer.getValue(this.dataView, 'range3', this.data.max);
-                this.range.range4 = this.data.max;
-            }
-
-            if (this.data.value >= this.data.min && this.data.value <= this.range.range1) {
-                this.fill = 'fill1';
-                this.border = 'border1';
-            }
-            else if (this.data.value > this.range.range1 && this.data.value <= this.range.range2) {
-                this.fill = 'fill2';
-                this.border = 'border2';
-            }
-            else if (this.data.value > this.range.range2 && this.data.value <= this.range.range3) {
-                this.fill = 'fill3';
-                this.border = 'border3';
-            }
-            else {
-                this.fill = 'fill4';
-                this.border = 'border4';
-            }
-
-            const settings: ThermometerSettings = ThermometerSettings.parse<ThermometerSettings>(dataView);
-            let legendData = this.createLegendData(this.dataView, this.host, settings);
-            this.viewModel = {
-                dataView: this.dataView,
-                settings: settings,
-                legendData: legendData
-            }
-            this.renderLegend();
-            var height = viewport.height;
-            var width = viewport.width;
-            this.svg.attr("width", width);
-            this.svg.attr("height", '100%');
-            d3.select(".legend").style('margin-top', parseInt($(".legend").css('marginTop')) - height);
-            this.draw(width, 0.98 * height, duration);
+            return defaultValue;
         }
-
-        public draw(width: number, height: number, duration: number) {
-            this.svg.selectAll("*").remove();
-            this.mainGroup = this.svg.append('g');
-            this.backRect = this.mainGroup.append('rect');
-            this.backCircle = this.mainGroup.append('circle');
-            this.fillRect = this.mainGroup.append('rect');
-            this.fillCircle = this.mainGroup.append('circle');
-            this.text = this.mainGroup.append('text');
-            this.tempMarkings = this.svg.append("g").attr("class", "y axis");
-            this.target = this.svg.append("g").attr("class", "yLeftAxis axis");
-            var radius = height * 0.1;
-            var padding = radius * 0.25;
-            this.drawBack(width, height, radius);
-            this.drawFill(width, height, radius, padding, duration);
-            this.drawTicks(width, height, radius, padding);
-            this.drawText(width, height, radius, padding);
-            if (this.data.targetValue)
-                this.drawTarget(width, height, radius, padding);
-            d3.select("#y axis").remove();
-        }
-
-        public drawBack(width: number, height: number, radius: number) {
-            var rectHeight = height - radius;
-            var fill = Thermometer.getFill(this.dataView, this.border).solid.color;
-            this.backCircle
-                .attr({
-                    'cx': width / 2,
-                    'cy': rectHeight,
-                    'r': radius
-                })
-                .style({
-                    'fill': fill
-                });
-
-            this.backRect
-                .attr({
-                    'x': (width - radius) / 2,
-                    'y': 0,
-                    'width': radius,
-                    'height': rectHeight
-                })
-                .style({
-                    'fill': fill
-                })
-        }
-
-        public drawFill(width: number, height: number, radius: number, padding: number, duration: number) {
-            var innerRadius = radius * 0.8;
-            var fillWidth = innerRadius * 0.7;
-            var ZeroValue = height - (radius * 2) - padding;
-            var fill = Thermometer.getFill(this.dataView, this.fill).solid.color;
-
-            var min = this.data.min;
-            var max = this.data.max;
-
-            var value = this.data.value;
-            var percentage = (ZeroValue - padding) * ((value - min) / (max - min));
-            var rectHeight = height - radius;
-            if (isNaN(rectHeight)) {
-                rectHeight = 0;
-            }
-            if (isNaN(percentage)) {
-                percentage = 0;
-            }
-            this.fillCircle.attr({
-                'cx': width / 2,
-                'cy': rectHeight,
-                'r': innerRadius
-            }).style({
-                'fill': fill
-            });
-            if (rectHeight !== 0 && percentage !== 0) {
-                this.fillRect
-                    .style({
-                        'fill': fill
-                    })
-                    .attr({
-                        'x': (width - fillWidth) / 2,
-                        'width': fillWidth,
-                    })
-                    .attr({
-                        'y': ZeroValue - percentage,
-                        'height': rectHeight - ZeroValue + percentage
-                    });
-            }
-        }
-
-        private drawTicks(width: number, height: number, radius: number, padding: number) {
-            d3.select(".y.axis").attr("visibility", "visible");
-            var y, yAxis, tickData = [], iCount;
-            var postFix = Thermometer.getValue(this.dataView, 'postfix', '');
-            y = d3.scale.linear().range([height - (radius * 2) - padding, padding]);
-            y.domain([this.data.min, this.data.max]);
-            var interval = (this.data.max - this.data.min) / 5;
-            tickData[0] = this.data.min;
-            let sTextNew;
-            for (iCount = 1; iCount < 6; iCount++) {
-                tickData[iCount] = tickData[iCount - 1] + interval;
-            }
-            for (iCount = 0; iCount < 6; iCount++) {
-                let sText = tickData[iCount] + " " + postFix;
-                sTextNew = postFix;
-                var fTextWidth, iTextHeight;
-                let textProperties: TextProperties = {
-                    text: sText,
-                    fontFamily: 'Segoe UI',
-                    fontSize: (radius * 0.48) + "px"
-                };
-                fTextWidth = textMeasurementService.measureSvgTextWidth(textProperties);
-                iTextHeight = textMeasurementService.measureSvgTextHeight(textProperties);
-                let spaceAvailable = (width - radius) / 2 - (radius * 0.3);
-                let iNumofChars = sText.length;
-                let fCharSpace = fTextWidth / iNumofChars;
-                let iNumofCharsAllowed = spaceAvailable / fCharSpace;
-                if (iNumofCharsAllowed < iNumofChars)
-                    sTextNew = sTextNew.substring(0, iNumofCharsAllowed - 10) + "...";
-            }
-            yAxis = d3.svg.axis().scale(y).ticks(6).orient("right").tickValues(tickData);
-            this.tempMarkings
-                .attr("transform", "translate(" + ((width + radius) / 2 + (radius * 0.15)) + ",0)")
-                .style({
-                    'font-size': (radius * 0.03) + 'em',
-                    'font-family': 'Segoe UI',
-                    'stroke': 'none',
-                    'fill': '#333'
-                })
-                .call(yAxis);
-            this.tempMarkings.selectAll('.axis line, .axis path').style({ 'stroke': '#333', 'fill': 'none' });
-            for (iCount = 0; iCount < document.querySelectorAll('.axis text').length; iCount++) {
-                document.querySelectorAll('.axis text')[iCount].innerHTML = document.querySelectorAll('.axis text')[iCount].innerHTML + ' ' + sTextNew;
-            }
-            if (!this.data.drawTickBar) {
-                d3.select(".y.axis").attr("visibility", "hidden");
-            }
-
-        }
-
-        private drawTarget(width: number, height: number, radius: number, padding: number) {
-            var postFix = Thermometer.getValue(this.dataView, 'postfix', '');
-            d3.select(".yLeftAxis.axis").attr("visibility", "visible");
-            var target = this.data.targetValue;
-
-            var ZeroValue = height - (radius * 2) - padding;
-            var min = this.data.min;
-            var max = this.data.max;
-            var percentage = (ZeroValue - padding) * ((target - min) / (max - min));
-
-            var yPos = ZeroValue - percentage;
-
-            var sText = target + " " + postFix;
-            var fTextWidth, iTextHeight;
-            let textProperties: TextProperties = {
-                text: sText,
-                fontFamily: 'Segoe UI',
-                fontSize: (radius * 0.48) + "px"
-            };
-            fTextWidth = textMeasurementService.measureSvgTextWidth(textProperties);
-            iTextHeight = textMeasurementService.measureSvgTextHeight(textProperties);
-
-            this.svg.append("line")
-                .style("stroke", "black")
-                .attr("x1", (width - radius) / 2)
-                .attr("y1", yPos)
-                .attr("x2", (width - radius) / 2 - (radius * 0.3))
-                .attr("y2", yPos);
-
-            let spaceAvailable = (width - radius) / 2 - (radius * 0.3);
-            let iNumofChars = sText.length;
-            let fCharSpace = fTextWidth / iNumofChars;
-            let iNumofCharsAllowed = spaceAvailable / fCharSpace;
-            let sTextNew = sText;
-            if (iNumofCharsAllowed < iNumofChars)
-                sTextNew = sText.substring(0, iNumofCharsAllowed - 2) + "...";
-            let textPropertiesNew: TextProperties = {
-                text: sTextNew,
-                fontFamily: 'Segoe UI',
-                fontSize: (radius * 0.48) + "px"
-            };
-            let fTextWidthNew = textMeasurementService.measureSvgTextWidth(textPropertiesNew);
-            let iTextHeightNew = textMeasurementService.measureSvgTextHeight(textPropertiesNew);
-
-            this.svg.append("text")
-                .attr({ "x": (width - radius) / 2 - (radius * 0.3) - fTextWidthNew + "px", "y": (yPos) + iTextHeight * 0.1 + radius * 0.1 + "px", "font-size": (radius * 0.48) + "px", "text-anchor": "left" })
-                .text(sTextNew)
-                .append("svg:title")
-                .text(function (d) { return "Target Value: " + sText });
-
-        }
-
-        private drawText(width: number, height: number, radius: number, padding: number) {
-            this.text
-                .text((this.data.value > this.data.max ? this.data.max : this.data.value) | 0)
-                .attr({ 'x': width / 2, y: height - radius, 'dy': '.35em' })
-                .style({
-                    'fill': Thermometer.getFill(this.dataView, 'fontColor').solid.color,
-                    'text-anchor': 'middle',
-                    'font-family': 'Segoe UI',
-                    'font-size': (radius * 0.03) + 'em'
-                })
-        }
-
-        public enumerateObjectInstances(options: EnumerateVisualObjectInstancesOptions): VisualObjectInstance[] {
-            var instances: VisualObjectInstance[] = [];
-            var dataView = this.dataView;
-
-            switch (options.objectName) {
-                case 'config':
-                    var config: VisualObjectInstance = {
-                        objectName: 'config',
-                        displayName: 'Configurations',
-                        selector: null,
-                        properties: {
-                            max: Thermometer.getValue<number>(dataView, 'max', null),
-                            min: Thermometer.getValue<number>(dataView, 'min', null),
-                            tickBar: Thermometer.getValue<boolean>(dataView, 'tickBar', true),
-                            fontColor: Thermometer.getFill(dataView, 'fontColor'),
-                            postfix: Thermometer.getValue<string>(dataView, 'postfix', '')
-                        }
-                    };
-                    instances.push(config);
-                    break;
-                case 'ranges':
-                    var ranges: VisualObjectInstance = {
-                        objectName: 'ranges',
-                        displayName: 'Ranges',
-                        selector: null,
-                        properties: {
-                            range1: Thermometer.getValue<number>(dataView, 'range1', null),
-                            range2: Thermometer.getValue<number>(dataView, 'range2', null),
-                            range3: Thermometer.getValue<number>(dataView, 'range3', null),
-                            range4: Thermometer.getValue<number>(dataView, 'range4', null)
-                        }
-                    };
-                    instances.push(ranges);
-                    break;
-                case 'category1':
-                    var category1: VisualObjectInstance = {
-                        objectName: 'category1',
-                        displayName: 'Category 1',
-                        selector: null,
-                        properties: {
-                            fill1: Thermometer.getFill(dataView, 'fill1'),
-                            border1: Thermometer.getFill(dataView, 'border1')
-                        }
-                    };
-                    instances.push(category1);
-                    break;
-                case 'category2':
-                    var category2: VisualObjectInstance = {
-                        objectName: 'category2',
-                        displayName: 'Category 2',
-                        selector: null,
-                        properties: {
-                            fill2: Thermometer.getFill(dataView, 'fill2'),
-                            border2: Thermometer.getFill(dataView, 'border2')
-                        }
-                    };
-                    instances.push(category2);
-                    break;
-                case 'category3':
-                    var category3: VisualObjectInstance = {
-                        objectName: 'category3',
-                        displayName: 'Category 3',
-                        selector: null,
-                        properties: {
-                            fill3: Thermometer.getFill(dataView, 'fill3'),
-                            border3: Thermometer.getFill(dataView, 'border3')
-                        }
-                    };
-                    instances.push(category3);
-                    break;
-                case 'category4':
-                    var category4: VisualObjectInstance = {
-                        objectName: 'category4',
-                        displayName: 'Category 4',
-                        selector: null,
-                        properties: {
-                            fill4: Thermometer.getFill(dataView, 'fill4'),
-                            border4: Thermometer.getFill(dataView, 'border4')
-                        }
-                    };
-                    instances.push(category4);
-                    break;
-                case 'legend':
-                    var legend: VisualObjectInstance = {
-                        objectName: 'legend',
-                        displayName: 'Legend',
-                        selector: null,
-                        properties: {
-                            show: Thermometer.getValue<boolean>(dataView, 'show', true),
-                            position: Thermometer.getValue<string>(dataView, 'position', 'Right'),
-                            showTitle: Thermometer.getValue<boolean>(dataView, 'showTitle', false),
-                            titleText: Thermometer.getValue<string>(dataView, 'titleText', null),
-                            labelColor: Thermometer.getFill(dataView, 'labelColor'),
-                        }
-                    };
-                    instances.push(legend);
-                    break;
-            }
-
-            return instances;
-        }
-
-
-        /**
-         * Get legend data, calculate position and draw it
-         */
-        private renderLegend(): void {
-
-            if (!this.viewModel)
-                return;
-            if (!this.viewModel.legendData) {
-                return;
-            }
-            let position: LegendPosition = this.viewModel.settings.legend.show
-                ? LegendPosition[this.viewModel.settings.legend.position]
-                : LegendPosition.None;
-            this.legend.changeOrientation(position);
-
-            this.legend.drawLegend(this.viewModel.legendData, _.clone(this.viewport));
-            Legend.positionChartArea(this.ThermometerDiv, this.legend);
-            this.svg.style('margin', 0);
-            switch (this.legend.getOrientation()) {
-                case LegendPosition.Left:
-                case LegendPosition.LeftCenter:
-                    this.svg.style('margin-left', parseInt($(".legend").css('width')));
-                case LegendPosition.Right:
-                case LegendPosition.RightCenter:
-                    this.viewport.width -= this.legend.getMargins().width;
-                    break;
-                case LegendPosition.Top:
-                case LegendPosition.TopCenter:
-                    this.svg.style('margin-top', parseInt($(".legend").css('height')));
-                    d3.select(".legend").style('margin-top', parseInt($(".legend").css('marginTop')) - 2 * this.legend.getMargins().height);
-                case LegendPosition.Bottom:
-                case LegendPosition.BottomCenter:
-                    this.viewport.height -= 1.9 * this.legend.getMargins().height;
-                    d3.select(".legend").style('margin-top', parseInt($(".legend").css('marginTop')) - 2.2 * this.legend.getMargins().height);
-                    break;
-            }
-        }
-
 
         private static getFill(dataView: DataView, key): Fill {
             if (dataView) {
-                var objects = dataView.metadata.objects;
+                const objects = dataView.metadata.objects;
 
                 if (objects) {
-                    var config = objects['config'];
+                    const config = objects['config'];
                     if (config) {
-                        var fill = <Fill>config[key];
-                        if (fill)
+                        const fill = <Fill>config[key];
+                        if (fill) {
                             return fill;
+                        }
                     }
-                    var category1 = objects['category1'];
+                    const category1 = objects['ranges'];
                     if (category1) {
-                        var fill = <Fill>category1[key];
-                        if (fill)
+                        const fill = <Fill>category1[key];
+                        if (fill) {
                             return fill;
+                        }
                     }
-                    var category2 = objects['category2'];
-                    if (category2) {
-                        var fill = <Fill>category2[key];
-                        if (fill)
-                            return fill;
-                    }
-                    var category3 = objects['category3'];
-                    if (category3) {
-                        var fill = <Fill>category3[key];
-                        if (fill)
-                            return fill;
-                    }
-                    var category4 = objects['category4'];
-                    if (category4) {
-                        var fill = <Fill>category4[key];
-                        if (fill)
-                            return fill;
-                    }
-                    var legend = objects['legend'];
+                    const legend = objects['legend'];
                     if (legend) {
-                        var fill = <Fill>legend[key];
-                        if (fill)
+                        const fill = <Fill>legend[key];
+                        if (fill) {
                             return fill;
+                        }
                     }
                 }
             }
@@ -711,34 +184,725 @@ module powerbi.extensibility.visual {
                     return { solid: { color: '#D0EEF7' } };
             }
         }
+        /** Update is called for data updates, resizes & formatting changes */
+        public update(options: VisualUpdateOptions) {
+            this.viewport = options.viewport;
+            if (!options.dataViews) {
+                return;
+            }
+            if (0 === options.dataViews.length) {
+                return;
+            }
+            const dataView = options.dataViews[0];
+            this.dataView = options.dataViews[0];
 
-        private static getValue<T>(dataView: DataView, key: string, defaultValue: T): T {
-            if (dataView) {
-                var objects = dataView.metadata.objects;
-                if (objects) {
-                    var config = objects['config'];
-                    if (config) {
-                        var size = <T>config[key];
-                        if (size != null)
-                            return size;
+            this.data = {
+                value: 0,
+                targetValue: null,
+                color: null,
+                min: null,
+                max: null,
+                drawTickBar: null
+            };
+            let tempAvailable = false;
+            if (dataView && dataView.categorical) {
+                for (let i = 0; i < dataView.metadata.columns.length; i++) {
+                    if (options.dataViews[0].metadata.columns[i].roles['Temperature']) {
+                        tempAvailable = true;
                     }
-                    var ranges = objects['ranges'];
-                    if (ranges) {
-                        var range = <T>ranges[key];
-                        if (range)
-                            return range;
-                    }
-                    var legend = objects['legend'];
-                    if (legend) {
-                        var value = <T>legend[key];
-                        if (value != null)
-                            return value;
-                    }
+                }
+                if (!tempAvailable) {
+                    $('.Thermometer').empty();
+                    $('.legend g').empty();
 
+                    return;
+                }
+                this.renderData();
+                this.getFormatter(options);
+                this.getRange();
+                this.renderLegend();
+
+                const viewport = options.viewport;
+                const duration = 1000;
+                const height = viewport.height;
+                const width = viewport.width;
+                this.svg.attr('width', width);
+                this.svg.attr('height', height);
+                this.draw(width, height, duration);
+
+                // Adding ellipsis for ticks
+                const tickstarting: number = parseInt(d3.select('.y.axis').attr('transform').split('(')[1].split(',')[0], 10);
+                const measureTextProperties1: TextProperties = {
+                    text: d3.selectAll('.tick:last-of-type text').text(),
+                    fontFamily: 'Segoe UI',
+                    fontSize: `${((height * 0.1) * 0.03) * 16}px`
+                };
+                let tickwidth: number = 0;
+                tickwidth = textMeasurementService.measureSvgTextWidth(measureTextProperties1);
+                const thisContext = this;
+                const ticks = this.svg.selectAll('.tick text')[0];
+                ticks.forEach(element => {
+                    let ele;
+                    ele = element;
+                    ele.textContent = thisContext.getTMS(
+                        ele.textContent, ((height * 0.1) * 0.03) * 16,
+                        tickwidth + (options.viewport.width - (tickwidth + tickstarting + 9)));
+                });
+
+                // Adding title for legends
+                d3.selectAll('.legendItem > title')
+                    .text(function (d, i) {
+                        return thisContext.legendsTitleData[i];
+                    });
+            }
+        }
+        public enumerateObjectInstances(options: EnumerateVisualObjectInstancesOptions): VisualObjectInstance[] {
+            const instances: VisualObjectInstance[] = [];
+            const dataView = this.dataView;
+
+            switch (options.objectName) {
+                case 'config':
+                    const config: VisualObjectInstance = {
+                        objectName: 'config',
+                        displayName: 'Configurations',
+                        selector: null,
+                        properties: {
+                            max: Thermometer.getValue<number>(dataView, 'config', 'max', null),
+                            min: Thermometer.getValue<number>(dataView, 'config', 'min', null),
+                            tickBar: Thermometer.getValue<boolean>(dataView, 'config', 'tickBar', true),
+                            fontColor: Thermometer.getFill(dataView, 'fontColor'),
+                            postfix: Thermometer.getValue<string>(dataView, 'config', 'postfix', ''),
+                            valDisplayUnits: Thermometer.getValue(dataView, 'config', 'valDisplayUnits', 0),
+                            valDecimalValue: Thermometer.getValue(dataView, 'config', 'valDecimalValue', 0)
+                        }
+                    };
+                    instances.push(config);
+                    break;
+                case 'legend':
+                    const legend: VisualObjectInstance = {
+                        objectName: 'legend',
+                        displayName: 'Legend',
+                        selector: null,
+                        properties: {
+                            show: Thermometer.getValue<boolean>(dataView, 'legend', 'show', true),
+                            position: Thermometer.getValue<string>(dataView, 'legend', 'position', 'Right'),
+                            showTitle: Thermometer.getValue<boolean>(dataView, 'legend', 'showTitle', false),
+                            titleText: Thermometer.getValue<string>(dataView, 'legend', 'titleText', null),
+                            labelColor: Thermometer.getFill(dataView, 'labelColor'),
+                            displayUnits: Thermometer.getValue(dataView, 'legend', 'displayUnits', 0),
+                            decimalValue: Thermometer.getValue(dataView, 'legend', 'decimalValue', 0),
+                            range1: this.range.range1,
+                            fill1: Thermometer.getFill(dataView, 'fill1'),
+                            border1: Thermometer.getFill(dataView, 'border1'),
+                            range2: this.range.range2,
+                            fill2: Thermometer.getFill(dataView, 'fill2'),
+                            border2: Thermometer.getFill(dataView, 'border2'),
+                            range3: this.range.range3,
+                            fill3: Thermometer.getFill(dataView, 'fill3'),
+                            border3: Thermometer.getFill(dataView, 'border3'),
+                            range4: this.data.max,
+                            fill4: Thermometer.getFill(dataView, 'fill4'),
+                            border4: Thermometer.getFill(dataView, 'border4')
+                        }
+                    };
+                    instances.push(legend);
+                    break;
+                default:
+                    break;
+            }
+
+            return instances;
+        }
+        private getFormatter(options: VisualUpdateOptions) {
+            // Formatter for ticks
+            let displayVal = 0;
+            if (Thermometer.getValue(this.dataView, 'config', 'valDisplayUnits', 0) === 0) {
+                const valLen = this.data.max.toString().length;
+                if (valLen > 9) {
+                    displayVal = 1e9;
+                } else if (valLen <= 9 && valLen > 6) {
+                    displayVal = 1e6;
+                } else if (valLen <= 6 && valLen >= 4) {
+                    displayVal = 1e3;
+                } else {
+                    displayVal = 10;
                 }
             }
-            return defaultValue;
+            if (options.dataViews[0].categorical.values[0].source.format &&
+                options.dataViews[0].categorical.values[0].source.format.indexOf('%') !== -1) {
+                this.valFormatter = ValueFormatter.create({
+                    format: this.dataView.categorical.values[0].source.format,
+                    value: Thermometer.getValue(this.dataView, 'config', 'valDisplayUnits', 0) === 0 ?
+                        0 : Thermometer.getValue(this.dataView, 'config', 'valDisplayUnits', 0),
+                    precision: Thermometer.getValue(this.dataView, 'config', 'valDecimalValue', 0)
+                });
+            } else {
+                this.valFormatter = ValueFormatter.create({
+                    format: this.dataView.categorical.values[0].source.format,
+                    value: Thermometer.getValue(this.dataView, 'config', 'valDisplayUnits', 0) === 0 ?
+                        displayVal : Thermometer.getValue(this.dataView, 'config', 'valDisplayUnits', 0),
+                    precision: Thermometer.getValue(this.dataView, 'config', 'valDecimalValue', 0)
+                });
+            }
+            if (options.dataViews[0].categorical.values[0].source.format &&
+                options.dataViews[0].categorical.values[0].source.format.indexOf('%') !== -1) {
+                this.legendsFormatter = ValueFormatter.create({
+                    format: this.dataView.categorical.values[0].source.format,
+                    value: Thermometer.getValue(this.dataView, 'legend', 'displayUnits', 0) === 0 ?
+                        0 : Thermometer.getValue(this.dataView, 'legend', 'displayUnits', 0),
+                    precision: Thermometer.getValue(this.dataView, 'legend', 'decimalValue', 0)
+                });
+            } else {
+                this.legendsFormatter = ValueFormatter.create({
+                    format: this.dataView.categorical.values[0].source.format,
+                    value: Thermometer.getValue(this.dataView, 'legend', 'displayUnits', 0) === 0 ?
+                        displayVal : Thermometer.getValue(this.dataView, 'legend', 'displayUnits', 0),
+                    precision: Thermometer.getValue(this.dataView, 'legend', 'decimalValue', 0)
+                });
+            }
+        }
+        private renderData() {
+            const series = this.dataView.categorical.values;
+
+            if (series && 0 !== series.length) {
+                const length = series.length;
+                let iCount = 0;
+                while (iCount < length) {
+                    if (series[iCount].source.roles['Temperature']) {
+                        if (typeof series[iCount].values[0] === 'number') {
+                            this.data.value = <number>series[iCount].values[0];
+                        }
+                    }
+                    if (series[iCount].source.roles['TargetValue']) {
+                        if (typeof series[iCount].values[0] === 'number') {
+                            this.data.targetValue = <number>series[iCount].values[0];
+                        }
+                    }
+                    if (series[iCount].source.roles['Min']) {
+                        if (typeof series[iCount].values[0] === 'number') {
+                            this.data.min = <number>series[iCount].values[0];
+                        }
+                    }
+                    if (series[iCount].source.roles['Max']) {
+                        if (typeof series[iCount].values[0] === 'number') {
+                            this.data.max = <number>series[iCount].values[0];
+                        }
+                    }
+                    iCount++;
+                }
+            }
+
+            if (!this.data.max) {
+                this.data.max = Thermometer.getValue(this.dataView, 'config', 'max', 100);
+            }
+            if (!this.data.min) {
+                this.data.min = Thermometer.getValue(this.dataView, 'config', 'min', 0);
+            }
+
+            this.data.drawTickBar = Thermometer.getValue(this.dataView, 'config', 'tickBar', true);
+            let maximum = this.data.max;
+            let minimum = this.data.min;
+            if (this.data.targetValue) {
+                maximum = Math.max(this.data.value, this.data.targetValue);
+                minimum = Math.min(this.data.value, this.data.targetValue);
+            } else {
+                maximum = Math.max(this.data.value, maximum);
+                minimum = Math.min(this.data.value, minimum);
+            }
+            // to handle value greater than max value
+            if (maximum > this.data.max) {
+                this.data.max = Math.ceil(maximum);
+            }
+            if (minimum < this.data.min) {
+                this.data.min = Math.floor(minimum);
+            }
+            if (this.data.min >= this.data.max) {
+                this.data.min = this.data.max - 1;
+            }
+
+        }
+        private getRange() {
+            this.range = {
+                range1: 0,
+                range2: 0,
+                range3: 0,
+                range4: 0
+            };
+
+            this.range.range1 = Thermometer.getValue(this.dataView, 'legend', 'range1', null);
+            if (this.range.range1 !== null && this.range.range1 >= this.data.max || this.range.range1 < this.data.min) {
+                this.range.range1 = null;
+            }
+
+            this.range.range2 = Thermometer.getValue(this.dataView, 'legend', 'range2', null);
+            if (this.range.range1 === null && this.range.range2 !== null) {
+                this.range.range2 = null;
+            } else if (this.range.range2 <= this.range.range1 || this.range.range2 > this.data.max) {
+                this.range.range2 = null;
+            }
+
+            this.range.range3 = Thermometer.getValue(this.dataView, 'legend', 'range3', null);
+            if (this.range.range2 === null && this.range.range3 !== null) {
+                this.range.range3 = null;
+            } else if (this.range.range3 <= this.range.range2 || this.range.range3 > this.data.max) {
+                this.range.range3 = null;
+            }
+
+            // Category-4, being the last category, always ends at maximum value
+            this.range.range4 = this.data.max;
+            this.getRangeColor();
+        }
+
+        private getRangeColor() {
+            const settings: ThermometerSettings = ThermometerSettings.parse<ThermometerSettings>(this.dataView);
+            const legendData = this.createLegendData(this.dataView, this.host, settings);
+            this.viewModel = {
+                dataView: this.dataView,
+                settings: settings,
+                legendData: legendData
+            };
+            for (let i = 0; i < legendData.dataPoints.length; i++) {
+                if (i === 0) {
+                    if (this.data.value >= this.data.min && this.data.value <= this.h1) {
+                        this.fill = 'fill1';
+                        this.border = 'border1';
+                    }
+                } else if (i === 1) {
+                    if (this.data.value > this.h1 && this.data.value <= this.h2) {
+                        this.fill = 'fill2';
+                        this.border = 'border2';
+                    }
+                } else if (i === 2) {
+                    if (this.data.value > this.h2 && this.data.value <= this.h3) {
+                        this.fill = 'fill3';
+                        this.border = 'border3';
+                    }
+                } else if (i === 3) {
+                    if (this.data.value > this.h3 && this.data.value <= this.h4) {
+                        this.fill = 'fill4';
+                        this.border = 'border4';
+                    }
+                }
+            }
+        }
+        private createLegendData(dataView: DataView, host: IVisualHost, settings: ThermometerSettings): LegendData {
+
+            const legendData: LegendData = {
+                fontSize: this.viewport.height * 0.032,
+                dataPoints: [],
+                title: settings.legend.showTitle ? (settings.legend.titleText) : null,
+                labelColor: settings.legend.labelColor
+            };
+
+            const low = this.getLowValueForLegend();
+            const high = this.getHighValueForLegend();
+
+            let i = 0;
+            const label = [];
+            if (low[1] > this.data.max) {
+                low[1] = this.data.max;
+            }
+            if (low[2] > this.data.max) {
+                low[2] = this.data.max;
+            }
+
+            while (low[i] < this.data.max && i < 4) {
+                label.push((i + 1).toString());
+                i++;
+            }
+            if (low[i] === this.data.max && high[i] === this.data.max && i < 4) {
+                label.push((i + 1).toString());
+            }
+            this.h1 = high[0];
+            this.h2 = high[1];
+            this.h3 = high[2];
+            this.h4 = high[3];
+            // let category = dataView.categorical.values[0];
+            const thisContext = this;
+            this.legendsTitleData = [];
+            legendData.dataPoints = label.map(
+                (typeMeta: string, index: number): LegendDataPoint => {
+                    this.legendsTitleData.push(`${low[parseInt(typeMeta, 10) - 1]}${'-'}${high[parseInt(typeMeta, 10) - 1]}`);
+
+                    return {
+                        label: (`${thisContext.legendsFormatter.format(low[parseInt(typeMeta, 10) - 1])}${'-'}` +
+                            `${thisContext.legendsFormatter.format(high[parseInt(typeMeta, 10) - 1])}`) as string,
+                        color: Thermometer.getFill(dataView, `${'fill'}${typeMeta}`).solid.color,
+                        icon: LegendIcon.Circle,
+                        selected: false,
+                        identity: host.createSelectionIdBuilder()
+                            .withMeasure(typeMeta)
+                            .createSelectionId()
+                    };
+                });
+
+            return legendData;
+        }
+
+        private getLowValueForLegend(): number[] {
+            const low = [];
+            for (let k = 0; k < 4; k++) {
+                if (k === 0) {
+                    if (this.data.min !== null) {
+                        low.push(this.data.min);
+                    }
+                } else if (k === 1) {
+                    if (this.range.range1 !== null) {
+                        low.push(this.range.range1);
+                    }
+                } else if (k === 2) {
+                    if (this.range.range2 !== null) {
+                        low.push(this.range.range2);
+                    }
+                } else if (k === 3) {
+                    if (this.range.range3 !== null) {
+                        low.push(this.range.range3);
+                    }
+                }
+            }
+
+            return low;
+        }
+        private getHighValueForLegend(): number[] {
+            const high = [];
+            for (let k = 0; k < 4; k++) {
+                if (k === 0) {
+                    if (this.range.range1 !== null) { high.push(this.range.range1); }
+                } else if (k === 1) {
+                    if (this.range.range2 !== null) { high.push(this.range.range2); }
+                } else if (k === 2) {
+                    if (this.range.range3 !== null) { high.push(this.range.range3); }
+                } else if (k === 3) {
+                    if (this.data.max !== null) { high.push(this.data.max); }
+                }
+            }
+
+            return high;
+        }
+        private draw(width: number, height: number, duration: number) {
+            this.svg.selectAll('*').remove();
+            this.mainGroup = this.svg.append('g');
+            this.backRect = this.mainGroup.append('rect');
+            this.backCircle = this.mainGroup.append('circle');
+            this.fillRect = this.mainGroup.append('rect');
+            this.fillCircle = this.mainGroup.append('circle');
+            this.text = this.mainGroup.append('text');
+            this.tempMarkings = this.svg.append('g').attr('class', 'y axis');
+            this.target = this.svg.append('g').attr('class', 'yLeftAxis axis');
+            const radius = height * 0.1;
+            const padding = radius * 0.25;
+            this.drawBack(width, height, radius);
+            this.drawFill(width, height, radius, padding, duration);
+            this.drawTicks(width, height, radius, padding);
+            this.drawText(width, height, radius, padding);
+            if (this.data.targetValue) {
+                this.drawTarget(width, height, radius, padding);
+            }
+            d3.select('#y axis').remove();
+        }
+
+        private drawBack(width: number, height: number, radius: number) {
+            const rectHeight = height - radius;
+            const fill = Thermometer.getFill(this.dataView, this.border).solid.color;
+            this.backCircle
+                .attr({
+                    cx: width / 2,
+                    cy: rectHeight,
+                    r: radius
+                })
+                .style({
+                    fill: fill
+                });
+
+            this.backRect
+                .attr({
+                    x: (width - radius) / 2,
+                    y: 0,
+                    width: radius,
+                    height: rectHeight
+                })
+                .style({
+                    fill: fill
+                });
+        }
+
+        private drawFill(width: number, height: number, radius: number, padding: number, duration: number) {
+            const innerRadius = radius * 0.8;
+            const fillWidth = innerRadius * 0.7;
+            const zeroValue = height - (radius * 2) - padding;
+            const fill = Thermometer.getFill(this.dataView, this.fill).solid.color;
+
+            const min = this.data.min;
+            const max = this.data.max;
+
+            const value = this.data.value;
+            let percentage = (zeroValue - padding) * ((value - min) / (max - min));
+            let rectHeight = height - radius;
+            if (isNaN(rectHeight)) {
+                rectHeight = 0;
+            }
+            if (isNaN(percentage)) {
+                percentage = 0;
+            }
+            this.fillCircle.attr({
+                cx: width / 2,
+                cy: rectHeight,
+                r: innerRadius
+            }).style({
+                fill: fill
+            });
+            if (rectHeight !== 0 && percentage !== 0) {
+                this.fillRect
+                    .style({
+                        fill: fill
+                    })
+                    .attr({
+                        x: (width - fillWidth) / 2,
+                        width: fillWidth
+                    })
+                    .attr({
+                        y: zeroValue - percentage,
+                        height: rectHeight - zeroValue + percentage
+                    });
+            }
+
+        }
+
+        private drawTicks(width: number, height: number, radius: number, padding: number) {
+            d3.select('.y.axis').attr('visibility', 'visible');
+            let y; let yAxis; const tickData = []; let iCount;
+            const postFix = Thermometer.getValue(this.dataView, 'config', 'postfix', '');
+            y = d3.scale.linear().range([height - (radius * 2) - padding, padding]);
+            y.domain([this.data.min, this.data.max]);
+            const interval = (this.data.max - this.data.min) / 5;
+            tickData[0] = this.data.min;
+            for (iCount = 1; iCount < 6; iCount++) {
+                tickData[iCount] = tickData[iCount - 1] + interval;
+            }
+            yAxis = d3.svg.axis().scale(y).ticks(6).orient('right').tickValues(tickData).tickFormat(this.valFormatter.format);
+            this.tempMarkings
+                .attr('transform', `${'translate('}${((width + radius) / 2 + (radius * 0.15))}${',0)'}`)
+                .style({
+                    'font-size': `${(radius * 0.03)}em`,
+                    'font-family': 'Segoe UI',
+                    stroke: 'none',
+                    fill: '#333'
+                })
+                .call(yAxis);
+            this.tempMarkings.selectAll('.axis line, .axis path')
+                .style({
+                    stroke: '#333',
+                    fill: 'none'
+                });
+            for (iCount = 0; iCount < document.querySelectorAll('.axis text').length; iCount++) {
+                document.querySelectorAll('.axis text')[iCount].textContent =
+                    `${document.querySelectorAll('.axis text')[iCount].textContent} ${postFix}`;
+            }
+            if (!this.data.drawTickBar) {
+                d3.select('.y.axis').attr('visibility', 'hidden');
+            }
+            //const This = this;
+            const titleFormatter = ValueFormatter.create({
+                format: this.dataView.categorical.values[0].source.format
+            });
+            d3.selectAll('.y.axis>.tick')
+                .append('title')
+                .text(function (d) {
+                    return `${titleFormatter.format(d)} ${postFix}`;
+                });
+        }
+
+        private drawTarget(width: number, height: number, radius: number, padding: number) {
+            const postFix = Thermometer.getValue(this.dataView, 'config', 'postfix', '');
+            d3.select('.yLeftAxis.axis').attr('visibility', 'visible');
+            const target = this.data.targetValue;
+
+            const zeroValue = height - (radius * 2) - padding;
+            const min = this.data.min;
+            const max = this.data.max;
+            const percentage = (zeroValue - padding) * ((target - min) / (max - min));
+
+            const yPos = zeroValue - percentage;
+
+            const sText = `${target} ${postFix}`;
+            let fTextWidth; let iTextHeight;
+            const textProperties: TextProperties = {
+                text: sText.toString(),
+                fontFamily: 'Segoe UI',
+                fontSize: `${(radius * 0.48)}px`
+            };
+            // Target information adding
+            const targetFormatter = ValueFormatter.create({
+                format: this.dataView.categorical.values[1].source.format
+            });
+            fTextWidth = textMeasurementService.measureSvgTextWidth(textProperties);
+            iTextHeight = textMeasurementService.measureSvgTextHeight(textProperties);
+
+            this.svg.append('line')
+                .classed('targetLine', true)
+                .style('stroke', 'black')
+                .attr('x1', (width - radius) / 2)
+                .attr('y1', yPos)
+                .attr('x2', (width - radius) / 2 - (radius * 0.3))
+                .attr('y2', yPos);
+
+            const textPropertiesNew: TextProperties = {
+                text: `${this.valFormatter.format(parseFloat(sText))} ${postFix}`,
+                fontFamily: 'Segoe UI',
+                fontSize: `${(radius * 0.48)}px`
+            };
+            const fTextWidthNew = textMeasurementService.measureSvgTextWidth(textPropertiesNew);
+            const iTextHeightNew = textMeasurementService.measureSvgTextHeight(textPropertiesNew);
+            if (postFix) {
+                if (this.legend.getOrientation() === LegendPosition.Left || this.legend.getOrientation() === LegendPosition.LeftCenter) {
+                    const legendsWidth = $('.legend').width();
+                    let xpos = (width - radius) / 2 - (radius * 0.5) - fTextWidthNew;
+                    if (xpos < legendsWidth) {
+                        xpos = legendsWidth;
+                    }
+                    this.svg.append('text')
+                        .classed('targetText', true)
+                        .attr({
+                            x: `${xpos}px`,
+                            y: `${(yPos) + iTextHeight * 0.1 + radius * 0.1}px`,
+                            'font-size': `${(radius * 0.48)}px`, 'text-anchor': 'left'
+                        })
+                        .text(this.getTMS(
+                            `${this.valFormatter.format(parseFloat(sText))} ${postFix}`,
+                            (radius * 0.48),
+                            (width / 2) - 50 - legendsWidth)
+                        );
+                } else {
+                    let xpos = (width - radius) / 2 - (radius * 0.5) - fTextWidthNew;
+                    if (xpos < 0) {
+                        xpos = 0;
+                    }
+                    this.svg.append('text')
+                        .classed('targetText', true)
+                        .attr({
+                            x: `${xpos}px`,
+                            y: `${(yPos) + iTextHeight * 0.1 + radius * 0.1}px`,
+                            'font-size': `${(radius * 0.48)}px`,
+                            'text-anchor': 'left'
+                        })
+                        .text(this.getTMS(
+                            `${this.valFormatter.format(parseFloat(sText))} ${postFix}`,
+                            (radius * 0.48),
+                            (width / 2) - 50)
+                        );
+                }
+
+            } else {
+                if (this.legend.getOrientation() === LegendPosition.Left || this.legend.getOrientation() === LegendPosition.LeftCenter) {
+                    const legendsWidth = $('.legend').width();
+                    let xpos = (width - radius) / 2 - (radius * 0.5) - fTextWidthNew;
+                    if (xpos < legendsWidth) {
+                        xpos = legendsWidth;
+                    }
+                    this.svg.append('text')
+                        .classed('targetText', true)
+                        .attr({
+                            x: `${xpos}px`,
+                            y: `${(yPos) + iTextHeight * 0.1 + radius * 0.1}px`,
+                            'font-size': `${(radius * 0.48)}px`,
+                            'text-anchor': 'left'
+                        })
+                        .text(this.getTMS(
+                            `${this.valFormatter.format(parseFloat(sText))} ${postFix}`,
+                            (radius * 0.48),
+                            (width / 2) - 50 - legendsWidth)
+                        );
+                } else {
+                    let xpos = (width - radius) / 2 - (radius * 0.5) - fTextWidthNew;
+                    if (xpos < 0) {
+                        xpos = 0;
+                    }
+                    this.svg.append('text')
+                        .classed('targetText', true)
+                        .attr({
+                            x: `${xpos}px`,
+                            y: `${yPos + (iTextHeight * 0.1) + radius * 0.1}px`,
+                            'font-size': `${(radius * 0.48)}px`,
+                            'text-anchor': 'left'
+                        })
+                        .text(this.getTMS(
+                            `${this.valFormatter.format(parseFloat(sText))} ${postFix}`,
+                            (radius * 0.48),
+                            (width / 2) - 50)
+                        );
+                }
+            }
+
+            this.svg.select('.targetText')
+                .append('title')
+                .text(`${targetFormatter.format(parseFloat(sText))} ${postFix}`);
+        }
+
+        private drawText(width: number, height: number, radius: number, padding: number) {
+            this.text
+                .text(this.getTMS(
+                    this.valFormatter.format(
+                        this.data.value > this.data.max ? this.data.max : this.data.value),
+                    (radius * 0.03) * 16,
+                    (radius * 0.8) * 2))
+                .attr({ x: width / 2, y: height - radius, dy: '.35em' })
+                .style({
+                    fill: Thermometer.getFill(this.dataView, 'fontColor').solid.color,
+                    'text-anchor': 'middle',
+                    'font-family': 'Segoe UI',
+                    'font-size': `${(radius * 0.03)}em`
+                });
+            const titleFormatter = ValueFormatter.create({
+                format: this.dataView.categorical.values[0].source.format
+            });
+            this.text.append('title')
+                .text(titleFormatter.format(this.data.value > this.data.max ? this.data.max : this.data.value));
+        }
+
+        private getTMS(stringName: string, textSize: number, width: number): string {
+            const measureTextProperties: TextProperties = {
+                text: stringName,
+                fontFamily: 'Segoe UI',
+                fontSize: `${textSize}px`
+            };
+
+            return textMeasurementService.getTailoredTextOrDefault(measureTextProperties, width);
+        }
+
+        /**
+         * Get legend data, calculate position and draw it
+         */
+        private renderLegend(): void {
+            if (!this.viewModel) {
+                return;
+            }
+            if (!this.viewModel.legendData) {
+                return;
+            }
+            const position: LegendPosition = this.viewModel.settings.legend.show
+                ? LegendPosition[this.viewModel.settings.legend.position]
+                : LegendPosition.None;
+            this.legend.changeOrientation(position);
+            this.legend.drawLegend(this.viewModel.legendData, _.clone(this.viewport));
+            this.svg.style('margin', `${0}px`);
+            switch (this.legend.getOrientation()) {
+                case LegendPosition.Left:
+                case LegendPosition.LeftCenter:
+                    break;
+                case LegendPosition.Right:
+                case LegendPosition.RightCenter:
+                    this.viewport.width -= this.legend.getMargins().width;
+                    break;
+                case LegendPosition.Top:
+                case LegendPosition.TopCenter:
+                    this.svg.style('margin-top', `${parseInt($('.legend').css('height'), 10)}px`);
+                case LegendPosition.Bottom:
+                case LegendPosition.BottomCenter:
+                    this.viewport.height -= 1.9 * this.legend.getMargins().height;
+                    break;
+                default:
+                    break;
+            }
         }
     }
-
 }
